@@ -1,0 +1,62 @@
+{
+    "frames": [
+        {
+            "timestep_index": 0,
+            "timestep_index_original": 0,
+            "timestep_id": "00000",
+            "camera_index": 0,
+            "camera_id": "0",
+            "cx": 512.0,
+            "cy": 512.0,
+            "fl_x": 2572.583984375,
+            "fl_y": 2572.583984375,
+            "h": 1024,
+            "w": 1024,
+            "camera_angle_x": 0.3929093916991028,
+            "camera_angle_y": 0.3929093916991028,
+            "transform_matrix": [
+                [
+                    1.0,
+                    0.0,
+                    0.0,
+                    0.0009928332874551415
+                ],
+                [
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.0016672230558469892
+                ],
+                [
+                    0.0,
+                    0.0,
+                    1.0,
+                    0.776141494512558
+                ],
+                [
+                    0.0,
+                    0.0,
+                    0.0,
+                    1.0
+                ]
+            ],
+            "file_path": "images/00000_00.png",
+            "fg_mask_path": "fg_masks/00000_00.png",
+            "flame_param_path": "flame_param/00000.npz"
+        }
+    ],
+    "cx": 512.0,
+    "cy": 512.0,
+    "fl_x": 512.0,
+    "fl_y": 512.0,
+    "h": 1024,
+    "w": 1024,
+    "camera_angle_x": 1.5707963267948966,
+    "camera_angle_y": 1.5707963267948966,
+    "timestep_indices": [
+        0
+    ],
+    "camera_indices": [
+        0
+    ]
+}
