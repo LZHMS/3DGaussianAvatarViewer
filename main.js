@@ -636,12 +636,14 @@ async function main() {
         carousel = false;
     } catch (err) {}
     
-    // const modelName = params.get("model") || "dufu";
-    // const url = new URL(`${modelName}.splat`,
-    //     "https://huggingface.co/LZHMS/3DAvatarModel/resolve/main/",
-    // );
-    const modelName = params.get("model") || "woman";
-    const url = new URL(`models/${modelName}.splat`, window.location.origin);
+    const modelName = params.get("model") || "james";
+
+    // GitHub raw content base URL
+    const rawBaseURL = "https://raw.githubusercontent.com/LZHMS/3DGaussianAvatarViewer/main/";
+
+    const url = new URL(`models/${modelName}.splat`, rawBaseURL);
+    // const modelName = params.get("model") || "woman";
+    // const url = new URL(`models/${modelName}.splat`, window.location.origin);
 
     const req = await fetch(url);
     if (req.status != 200)
