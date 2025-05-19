@@ -12,7 +12,7 @@ def process_ply_to_splat(ply_file_path):
     vert = plydata["vertex"]
     sorted_indices = np.argsort(
         -np.exp(vert["scale_0"] + vert["scale_1"] + vert["scale_2"])
-        / (1 + np.exp(-vert["opacity"]))
+        / 1 / (1 + np.exp(-vert["opacity"]))
     )
     buffer = BytesIO()
     for idx in sorted_indices:
@@ -28,6 +28,9 @@ def process_ply_to_splat(ply_file_path):
             [v["rot_0"], v["rot_1"], v["rot_2"], v["rot_3"]],
             dtype=np.float32,
         )
+        # print(f"position: {position}")
+        # print(f"opacity: {v['opacity']}")
+        # acti_opacity = 1 / (1 + np.exp(-v["opacity"]))
         SH_C0 = 0.28209479177387814
         color = np.array(
             [
@@ -37,6 +40,18 @@ def process_ply_to_splat(ply_file_path):
                 1 / (1 + np.exp(-v["opacity"])),
             ]
         )
+        # print(f"color: {color}")
+        # print(f"rot: {rot}")
+        # rot_uint8 = ((rot / np.linalg.norm(rot)) * 128 + 128).clip(0, 255).astype(np.uint8)
+        # rot_uint16 = ((rot / np.linalg.norm(rot)) * 32768 + 32768).clip(0, 65535).astype(np.uint16)
+        # print(f"rot_uint8: {rot_uint8}")
+        # print(f"rot_uint16: {rot_uint16}")
+
+        # decoded_rot_uint8 = (rot_uint8.astype(np.float32) - 128) / 128
+        # decoded_rot_uint16 = (rot_uint16.astype(np.float32) - 32768) / 32768
+        # print(f"decoded_rot_uint8: {decoded_rot_uint8}")
+        # print(f"decoded_rot_uint16: {decoded_rot_uint16}")
+
         buffer.write(position.tobytes())
         buffer.write(scales.tobytes())
         buffer.write((color * 255).clip(0, 255).astype(np.uint8).tobytes())
@@ -46,6 +61,13 @@ def process_ply_to_splat(ply_file_path):
             .astype(np.uint8)
             .tobytes()
         )
+        # buffer.write(
+        #     ((rot / np.linalg.norm(rot)) * 32768 + 32768)              # 缩放与偏移适配 uint16 范围 [0, 65535]
+        #     .clip(0, 65535)                    # 限制在 uint16 范围
+        #     .astype(np.uint16)                # 类型改为 uint16
+        #     .tobytes()
+        # )
+        # buffer.write(rot.tobytes())
 
     return buffer.getvalue()
 

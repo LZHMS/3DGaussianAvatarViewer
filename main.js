@@ -12,7 +12,7 @@ let cameras = [
       position: [
         0.0009928332874551415,
         0.016672230558469892,
-        0.776141494512558
+        -1.376141494512558
       ],
       fx: 2572.583984375,     // frame.fl_x
       fy: 2572.583984375      // frame.fl_y
@@ -37,8 +37,8 @@ function getViewMatrix(camera) {
     const t = camera.position;
     const camToWorld = [
         [R[0], R[1], R[2], 0],
-        [R[3], R[4], R[5], 0],
-        [R[6], R[7], R[8], 0],
+        [R[3], -R[4], -R[5], 0],
+        [R[6], -R[7], -R[8], 0],
         [
             -t[0] * R[0] - t[1] * R[3] - t[2] * R[6],
             -t[0] * R[1] - t[1] * R[4] - t[2] * R[7],
@@ -150,20 +150,93 @@ function translate4(a, x, y, z) {
     ];
 }
 
-function makeYaw180() {
-    return [
-      [ -1, 0,  0, 0 ],
-      [  0, 1,  0, 0 ],
-      [  0, 0, -1, 0 ],
-      [  0, 0,  0, 1 ],
-    ].flat();
-  }
+const vertexShaderSource = `
+#version 300 es
+precision highp float;
+precision highp int;
+
+uniform highp usampler2D u_texture;
+uniform mat4 projection, view;
+uniform vec2 focal;
+uniform vec2 viewport;
+
+in vec2 position;
+in int index;
+
+out vec4 vColor;
+out vec2 vPosition;
+
+void main () {
+    uvec4 cen = texelFetch(u_texture, ivec2((uint(index) & 0x3ffu) << 1, uint(index) >> 10), 0);
+    vec4 cam = view * vec4(uintBitsToFloat(cen.xyz), 1);
+    vec4 pos2d = projection * cam;
+
+    float clip = 1.2 * pos2d.w;
+    if (pos2d.z < -clip || pos2d.x < -clip || pos2d.x > clip || pos2d.y < -clip || pos2d.y > clip) {
+        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+        return;
+    }
+
+    uvec4 cov = texelFetch(u_texture, ivec2(((uint(index) & 0x3ffu) << 1) | 1u, uint(index) >> 10), 0);
+    vec2 u1 = unpackHalf2x16(cov.x), u2 = unpackHalf2x16(cov.y), u3 = unpackHalf2x16(cov.z);
+    mat3 Vrk = mat3(u1.x, u1.y, u2.x, u1.y, u2.y, u3.x, u2.x, u3.x, u3.y);
+
+    mat3 J = mat3(
+        focal.x / cam.z, 0., -(focal.x * cam.x) / (cam.z * cam.z),
+        0., -focal.y / cam.z, (focal.y * cam.y) / (cam.z * cam.z),
+        0., 0., 0.
+    );
+
+    mat3 T = transpose(mat3(view)) * J;
+    mat3 cov2d = transpose(T) * Vrk * T;
+
+    float mid = (cov2d[0][0] + cov2d[1][1]) / 2.0;
+    float radius = length(vec2((cov2d[0][0] - cov2d[1][1]) / 2.0, cov2d[0][1]));
+    float lambda1 = mid + radius, lambda2 = mid - radius;
+
+    if(lambda2 < 0.0) return;
+    vec2 diagonalVector = normalize(vec2(cov2d[0][1], lambda1 - cov2d[0][0]));
+    vec2 majorAxis = min(sqrt(2.0 * lambda1), 1024.0) * diagonalVector;
+    vec2 minorAxis = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagonalVector.y, -diagonalVector.x);
+
+    vColor = clamp(pos2d.z/pos2d.w+1.0, 0.0, 1.0) * vec4((cov.w) & 0xffu, (cov.w >> 8) & 0xffu, (cov.w >> 16) & 0xffu, (cov.w >> 24) & 0xffu) / 255.0;
+    vPosition = position;
+
+    vec2 vCenter = vec2(pos2d) / pos2d.w;
+    gl_Position = vec4(
+        vCenter
+        + position.x * majorAxis / viewport
+        + position.y * minorAxis / viewport, 0.0, 1.0);
+
+}
+`.trim();
+
+const fragmentShaderSource = `
+#version 300 es
+precision highp float;
+
+in vec4 vColor;
+in vec2 vPosition;
+
+out vec4 fragColor;
+
+void main () {
+    float A = -dot(vPosition, vPosition);
+    if (A < -4.0) discard;
+    float B = exp(A) * vColor.a;
+    fragColor = vec4(B * vColor.rgb, B);
+}
+
+`.trim();
 
 function createWorker(self) {
     let buffer;
     let vertexCount = 0;
     let viewProj;
     const rowLength = 3 * 4 + 3 * 4 + 4 + 4;
+    const f_rowNum = 8;
+    const u_rowNum = f_rowNum * 4;
+    const d_rowNum = f_rowNum * 2;
     let lastProj = [];
     let depthIndex = new Uint32Array();
     let lastVertexCount = 0;
@@ -208,6 +281,7 @@ function createWorker(self) {
         if (!buffer) return;
         const f_buffer = new Float32Array(buffer);
         const u_buffer = new Uint8Array(buffer);
+        const d_buffer = new Uint16Array(buffer);
 
         var texwidth = 1024 * 2; // Set to your desired width
         var texheight = Math.ceil((2 * vertexCount) / texwidth); // Set to your desired height
@@ -221,28 +295,48 @@ function createWorker(self) {
         // load it into webgl.
         for (let i = 0; i < vertexCount; i++) {
             // x, y, z
-            texdata_f[8 * i + 0] = f_buffer[8 * i + 0];
-            texdata_f[8 * i + 1] = f_buffer[8 * i + 1];
-            texdata_f[8 * i + 2] = f_buffer[8 * i + 2];
+            texdata_f[8 * i + 0] = f_buffer[f_rowNum * i + 0];
+            texdata_f[8 * i + 1] = f_buffer[f_rowNum * i + 1];
+            texdata_f[8 * i + 2] = f_buffer[f_rowNum * i + 2];
+            // console.log("xyz", texdata_f[8 * i + 0], texdata_f[8 * i + 1], texdata_f[8 * i + 2]);
 
             // r, g, b, a
-            texdata_c[4 * (8 * i + 7) + 0] = u_buffer[32 * i + 24 + 0];
-            texdata_c[4 * (8 * i + 7) + 1] = u_buffer[32 * i + 24 + 1];
-            texdata_c[4 * (8 * i + 7) + 2] = u_buffer[32 * i + 24 + 2];
-            texdata_c[4 * (8 * i + 7) + 3] = u_buffer[32 * i + 24 + 3];
+            texdata_c[4 * (8 * i + 7) + 0] = u_buffer[u_rowNum * i + 24 + 0];
+            texdata_c[4 * (8 * i + 7) + 1] = u_buffer[u_rowNum * i + 24 + 1];
+            texdata_c[4 * (8 * i + 7) + 2] = u_buffer[u_rowNum * i + 24 + 2];
+            texdata_c[4 * (8 * i + 7) + 3] = u_buffer[u_rowNum * i + 24 + 3];
+            // console.log("rgba", texdata_c[4 * (8 * i + 7) + 0], texdata_c[4 * (8 * i + 7) + 1], texdata_c[4 * (8 * i + 7) + 2], texdata_c[4 * (8 * i + 7) + 3]);
 
-            // quaternions
+            // scale
             let scale = [
-                f_buffer[8 * i + 3 + 0],
-                f_buffer[8 * i + 3 + 1],
-                f_buffer[8 * i + 3 + 2],
+                f_buffer[f_rowNum * i + 3 + 0],
+                f_buffer[f_rowNum * i + 3 + 1],
+                f_buffer[f_rowNum * i + 3 + 2],
             ];
+            // console.log("scale", scale);
+            
+            // console.log("rot buffer", f_buffer[f_rowNum * i + 7 + 0], f_buffer[f_rowNum * i + 7 + 1], f_buffer[f_rowNum * i + 7 + 2], f_buffer[f_rowNum * i + 7 + 3]);
             let rot = [
-                (u_buffer[32 * i + 28 + 0] - 128) / 128,
-                (u_buffer[32 * i + 28 + 1] - 128) / 128,
-                (u_buffer[32 * i + 28 + 2] - 128) / 128,
-                (u_buffer[32 * i + 28 + 3] - 128) / 128,
+                (u_buffer[u_rowNum * i + 28 + 0] - 128) / 128,
+                (u_buffer[u_rowNum * i + 28 + 1] - 128) / 128,
+                (u_buffer[u_rowNum * i + 28 + 2] - 128) / 128,
+                (u_buffer[u_rowNum * i + 28 + 3] - 128) / 128,
             ];
+            // let rot = [
+            //     (d_buffer[d_rowNum * i + 14 + 0] - 32768) / 32768,
+            //     (d_buffer[d_rowNum * i + 14 + 1] - 32768) / 32768,
+            //     (d_buffer[d_rowNum * i + 14 + 2] - 32768) / 32768,
+            //     (d_buffer[d_rowNum * i + 14 + 3] - 32768) / 32768,
+            // ];
+            
+            
+            // let rot = [
+            //     f_buffer[f_rowNum * i + 7 + 0],
+            //     f_buffer[f_rowNum * i + 7 + 1],
+            //     f_buffer[f_rowNum * i + 7 + 2],
+            //     f_buffer[f_rowNum * i + 7 + 3],
+            // ];
+            // console.log("rot", rot);
 
             // Compute the matrix product of S and R (M = S * R)
             const M = [
@@ -410,6 +504,7 @@ function createWorker(self) {
         const buffer = new ArrayBuffer(rowLength * vertexCount);
 
         console.time("build buffer");
+        console.log("vertexCount", vertexCount);
         for (let j = 0; j < vertexCount; j++) {
             row = sizeIndex[j];
 
@@ -433,23 +528,24 @@ function createWorker(self) {
                         attrs.rot_2 ** 2 +
                         attrs.rot_3 ** 2,
                 );
+                
+                rot[0] = (attrs.rot_0 / qlen) * 128 + 128;
+                rot[1] = (attrs.rot_1 / qlen) * 128 + 128;
+                rot[2] = (attrs.rot_2 / qlen) * 128 + 128;
+                rot[3] = (attrs.rot_3 / qlen) * 128 + 128;
+                // rot[0] = attrs.rot_0;
+                // rot[1] = attrs.rot_1;
+                // rot[2] = attrs.rot_2;
+                // rot[3] = attrs.rot_3;
 
-                // rot[0] = (attrs.rot_0 / qlen) * 128 + 128;
-                // rot[1] = (attrs.rot_1 / qlen) * 128 + 128;
-                // rot[2] = (attrs.rot_2 / qlen) * 128 + 128;
-                // rot[3] = (attrs.rot_3 / qlen) * 128 + 128;
-                rot[0] = attrs.rot_0;
-                rot[1] = attrs.rot_1;
-                rot[2] = attrs.rot_2;
-                rot[3] = attrs.rot_3;
-
-                // scales[0] = Math.exp(attrs.scale_0);
-                // scales[1] = Math.exp(attrs.scale_1);
-                // scales[2] = Math.exp(attrs.scale_2);
-                scales[0] = attrs.scale_0;
-                scales[1] = attrs.scale_1;
-                scales[2] = attrs.scale_2;
+                scales[0] = Math.exp(attrs.scale_0);
+                scales[1] = Math.exp(attrs.scale_1);
+                scales[2] = Math.exp(attrs.scale_2);
+                // scales[0] = attrs.scale_0;
+                // scales[1] = attrs.scale_1;
+                // scales[2] = attrs.scale_2;
             } else {
+                console.log('no scale');
                 scales[0] = 0.01;
                 scales[1] = 0.01;
                 scales[2] = 0.01;
@@ -475,8 +571,7 @@ function createWorker(self) {
                 rgba[2] = attrs.blue;
             }
             if (types["opacity"]) {
-                // rgba[3] = (1 / (1 + Math.exp(-attrs.opacity))) * 255;
-                rgba[3] = attrs.opacity;
+                rgba[3] = (1 / (1 + Math.exp(-attrs.opacity))) * 255;
             } else {
                 rgba[3] = 255;
             }
@@ -519,85 +614,6 @@ function createWorker(self) {
     };
 }
 
-const vertexShaderSource = `
-#version 300 es
-precision highp float;
-precision highp int;
-
-uniform highp usampler2D u_texture;
-uniform mat4 projection, view;
-uniform vec2 focal;
-uniform vec2 viewport;
-
-in vec2 position;
-in int index;
-
-out vec4 vColor;
-out vec2 vPosition;
-
-void main () {
-    uvec4 cen = texelFetch(u_texture, ivec2((uint(index) & 0x3ffu) << 1, uint(index) >> 10), 0);
-    vec4 cam = view * vec4(uintBitsToFloat(cen.xyz), 1);
-    vec4 pos2d = projection * cam;
-
-    float clip = 1.2 * pos2d.w;
-    if (pos2d.z < -clip || pos2d.x < -clip || pos2d.x > clip || pos2d.y < -clip || pos2d.y > clip) {
-        gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
-        return;
-    }
-
-    uvec4 cov = texelFetch(u_texture, ivec2(((uint(index) & 0x3ffu) << 1) | 1u, uint(index) >> 10), 0);
-    vec2 u1 = unpackHalf2x16(cov.x), u2 = unpackHalf2x16(cov.y), u3 = unpackHalf2x16(cov.z);
-    mat3 Vrk = mat3(u1.x, u1.y, u2.x, u1.y, u2.y, u3.x, u2.x, u3.x, u3.y);
-
-    mat3 J = mat3(
-        focal.x / cam.z, 0., -(focal.x * cam.x) / (cam.z * cam.z),
-        0., -focal.y / cam.z, (focal.y * cam.y) / (cam.z * cam.z),
-        0., 0., 0.
-    );
-
-    mat3 T = transpose(mat3(view)) * J;
-    mat3 cov2d = transpose(T) * Vrk * T;
-
-    float mid = (cov2d[0][0] + cov2d[1][1]) / 2.0;
-    float radius = length(vec2((cov2d[0][0] - cov2d[1][1]) / 2.0, cov2d[0][1]));
-    float lambda1 = mid + radius, lambda2 = mid - radius;
-
-    if(lambda2 < 0.0) return;
-    vec2 diagonalVector = normalize(vec2(cov2d[0][1], lambda1 - cov2d[0][0]));
-    vec2 majorAxis = min(sqrt(2.0 * lambda1), 1024.0) * diagonalVector;
-    vec2 minorAxis = min(sqrt(2.0 * lambda2), 1024.0) * vec2(diagonalVector.y, -diagonalVector.x);
-
-    vColor = clamp(pos2d.z/pos2d.w+1.0, 0.0, 1.0) * vec4((cov.w) & 0xffu, (cov.w >> 8) & 0xffu, (cov.w >> 16) & 0xffu, (cov.w >> 24) & 0xffu) / 255.0;
-    vPosition = position;
-
-    vec2 vCenter = vec2(pos2d) / pos2d.w;
-    gl_Position = vec4(
-        vCenter
-        + position.x * majorAxis / viewport
-        + position.y * minorAxis / viewport, 0.0, 1.0);
-
-}
-`.trim();
-
-const fragmentShaderSource = `
-#version 300 es
-precision highp float;
-
-in vec4 vColor;
-in vec2 vPosition;
-
-out vec4 fragColor;
-
-void main () {
-    float A = -dot(vPosition, vPosition);
-    if (A < -4.0) discard;
-    float B = exp(A) * vColor.a;
-    fragColor = vec4(B * vColor.rgb, B);
-}
-
-`.trim();
-
 function unpackFileAsBlob(filepath) {
     var _a, _b;
     return __awaiter(this, void 0, void 0, function* () {
@@ -610,13 +626,7 @@ function unpackFileAsBlob(filepath) {
     });
 }
 
-let defaultViewMatrix = [
-    0.47, 0.04, 0.88, 0, -0.11, 0.99, 0.02, 0, -0.88, -0.11, 0.47, 0, 0.07,
-    0.03, 6.55, 1,
-];
 let viewMatrix = getViewMatrix(camera);
-
-viewMatrix = multiply4(viewMatrix, makeYaw180());
 
 async function main() {
     let carousel = false;
@@ -625,13 +635,13 @@ async function main() {
         viewMatrix = JSON.parse(decodeURIComponent(location.hash.slice(1)));
         carousel = false;
     } catch (err) {}
-
-    const url = new URL(
-        params.get("url") || "218_EMO_2.splat",
-        "https://huggingface.co/LZHMS/3DAvatarModel/resolve/main/",
-    );
-
-    const offsetFileUrl = yield renderer.unpackFileAsBlob(url);
+    
+    // const modelName = params.get("model") || "dufu";
+    // const url = new URL(`${modelName}.splat`,
+    //     "https://huggingface.co/LZHMS/3DAvatarModel/resolve/main/",
+    // );
+    const modelName = params.get("model") || "woman";
+    const url = new URL(`models/${modelName}.splat`, window.location.origin);
 
     const req = await fetch(url);
     if (req.status != 200)
