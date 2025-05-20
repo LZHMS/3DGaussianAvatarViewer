@@ -636,8 +636,9 @@ async function main() {
         carousel = false;
     } catch (err) {}
     
+    const modelName = params.get("model") || "zhli";
     const url = new URL(
-        params.get("url") || "zhli.splat",
+        `${modelName}.splat`,
         "https://huggingface.co/LZHMS/3DAvatarModel/resolve/main/",
     );
     // const modelName = params.get("model") || "woman";
